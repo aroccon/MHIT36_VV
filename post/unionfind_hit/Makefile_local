@@ -1,0 +1,33 @@
+# Compiler
+FC = mpif90
+LD = $(FC)
+ 
+# Paths (Modify if necessary)
+ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+$(info $$ROOT_DIR is [${ROOT_DIR}])
+PARENT_DIR := $(abspath $(ROOT_DIR)/..)
+$(info $$PARENT_DIR is [${PARENT_DIR}])
+CUDECOMP_DIR = $(PARENT_DIR)/cuDecomp/build
+CUDA_DIR = /leonardo/prod/opt/compilers/cuda/12.3/none
+EXTRA_DIR = /leonardo/prod/opt/compilers/cuda/12.3/none/compat
+
+export $(CUDECOMP_DIR)/lib
+
+# Compiler and Linker Flags
+FFLAGS = -fast -acc -gpu=mem:managed -Minfo=accel -D USE_6 -Mfree -Mpreprocess -cpp -cuda  -I$(CUDECOMP_DIR)/include/
+LIBS = -L$(CUDA_DIR)/lib64/ -cudalib=cufft  
+
+# Source and Object Files
+OBJS = main.f90
+EXEC = ufind
+
+$(EXEC):        $(OBJS)
+	$(LD) $(FFLAGS) $(OBJS) $(LIBS) -o $@
+
+clean:
+	$(RM) $(EXEC)
+
+.SUFFIXES: .o
+
+.f90.o:
+	$(FC)  -c $(FFLAGS) $<
