@@ -10,15 +10,11 @@ call read_input()
 
 lx = 6.28
 dx = lx/nx
-ly = 3.14
-dy = ly/ny
-lz = 2.00
-dz = lz/nz
-epsr = 1.0
+epsr = 0.51
 
 call print_start()
 
-allocate(phi(nx,ny,nz))
+allocate(phi(nx,nx,nx))
 
 ! create output file
 open(2,file='area.dat',status='new',form='formatted')

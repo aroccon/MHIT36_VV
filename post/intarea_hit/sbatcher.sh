@@ -11,4 +11,4 @@
 
 module load gcc
 
-srun ./dropcount
+srun ./intarea

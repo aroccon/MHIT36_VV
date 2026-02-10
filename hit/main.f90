@@ -277,7 +277,8 @@ allocate(u(piX%shape(1),piX%shape(2),piX%shape(3)),v(piX%shape(1),piX%shape(2),p
 ! allocate(ustar(piX%shape(1),piX%shape(2),piX%shape(3)),vstar(piX%shape(1),piX%shape(2),piX%shape(3)),wstar(piX%shape(1),piX%shape(2),piX%shape(3))) ! provisional velocity field
 allocate(rhsu(piX%shape(1),piX%shape(2),piX%shape(3)),rhsv(piX%shape(1),piX%shape(2),piX%shape(3)),rhsw(piX%shape(1),piX%shape(2),piX%shape(3))) ! right hand side u,v,w
 allocate(rhsu_o(piX%shape(1),piX%shape(2),piX%shape(3)),rhsv_o(piX%shape(1),piX%shape(2),piX%shape(3)),rhsw_o(piX%shape(1),piX%shape(2),piX%shape(3))) ! right hand side u,v,w
-allocate(div(piX%shape(1),piX%shape(2),piX%shape(3)))
+allocate(mu(piX%shape(1),piX%shape(2),piX%shape(3)))
+allocate(tau12(piX%shape(1),piX%shape(2),piX%shape(3)),tau13(piX%shape(1),piX%shape(2),piX%shape(3)),tau23(piX%shape(1),piX%shape(2),piX%shape(3)))
 !PFM variables
 #if phiflag == 1
 allocate(phi(piX%shape(1),piX%shape(2),piX%shape(3)),q_phi(piX%shape(1),piX%shape(2),piX%shape(3)),rhsphi(piX%shape(1),piX%shape(2),piX%shape(3)),psidi(piX%shape(1),piX%shape(2),piX%shape(3)))
@@ -420,7 +421,7 @@ if (restart .eq. 0) then
    call writefield(tstart,1)
    call writefield(tstart,2)
    call writefield(tstart,3)
-   call writefield(tstart,4)
+   !call writefield(tstart,4)
    #if phiflag == 1
       call writefield(tstart,5)
    #endif
@@ -625,26 +626,17 @@ do t=tstart,tfin
             enddo
          enddo
       enddo
-
-      !do k=1+halo_ext, piX%shape(3)-halo_ext
-      !   do j=1+halo_ext, piX%shape(2)-halo_ext
-      !      do i=1,nx
-      !         q_phi(i,j,k) = rk4a(stage)*q_phi(i,j,k) + dt*rhsphi(i,j,k)
-      !         phi(i,j,k)   = phi(i,j,k) + rk4b(stage)*q_phi(i,j,k)
-      !      enddo
-      !   enddo
-      !enddo
-      !!$acc end kernels
    enddo  ! end RK4 stages
 
    ! clip phi between 0 and 1
    !$acc parallel loop collapse(3)
-   do k=1+halo_ext, piX%shape(3)-halo_ext
-      do j=1+halo_ext, piX%shape(2)-halo_ext
+   do k=1, piX%shape(3)
+      do j=1, piX%shape(2)
          do i=1,nx
             val = max(0.0d0, min(phi(i,j,k), 1.0d0))
             phi(i,j,k) = val
             psidi(i,j,k) = eps*log((val+enum)/(1.d0-val+enum))
+            mu(i,j,k)= muc*(1.d0 - phi(i,j,k)) + mud*phi(i,j,k)
          enddo
       enddo
    enddo
@@ -717,6 +709,29 @@ do t=tstart,tfin
             ! Manual periodicity ony along x (x-pencil), along y and z directions use halos
             if (ip .gt. nx) ip=1  
             if (im .lt. 1) im=nx
+            mu12=0.25d0*(mu(i,j,k) + mu(im,j,k) + mu(i,jm,k) + mu(im,jm,k))
+            mu13=0.25d0*(mu(i,j,k) + mu(im,j,k) + mu(i,j,km) + mu(im,j,km))
+            mu23=0.25d0*(mu(i,j,k) + mu(i,jm,k) + mu(i,j,km) + mu(i,jm,km))
+            tau12(i,j,k) = mu12*((u(i,j,k)-u(i,jm,k))*dxi + (v(i,j,k) - v(im,j,k))*dxi)
+            tau13(i,j,k) = mu13*((u(i,j,k)-u(i,j,km))*dxi + (w(i,j,k) - w(im,j,k))*dxi)
+            tau23(i,j,k) = mu23*((v(i,j,k)-v(i,j,km))*dxi + (w(i,j,k) - w(i,jm,k))*dxi)
+         enddo
+      enddo
+   enddo
+
+   !$acc parallel loop tile(16,4,2) 
+   do k=1+halo_ext, piX%shape(3)-halo_ext
+      do j=1+halo_ext, piX%shape(2)-halo_ext
+         do i=1,nx
+            ip=i+1
+            jp=j+1
+            kp=k+1
+            im=i-1
+            jm=j-1
+            km=k-1
+            ! Manual periodicity ony along x (x-pencil), along y and z directions use halos
+            if (ip .gt. nx) ip=1  
+            if (im .lt. 1) im=nx
             ! compute the products (conservative form)
             h11 = (u(ip,j,k)+u(i,j,k))*(u(ip,j,k)+u(i,j,k))     - (u(i,j,k)+u(im,j,k))*(u(i,j,k)+u(im,j,k))
             h12 = (u(i,jp,k)+u(i,j,k))*(v(i,jp,k)+v(im,jp,k))   - (u(i,j,k)+u(i,jm,k))*(v(i,j,k)+v(im,j,k))
@@ -741,20 +756,20 @@ do t=tstart,tfin
             rhsu(i,j,k)=-(h11+h12+h13)
             rhsv(i,j,k)=-(h21+h22+h23)
             rhsw(i,j,k)=-(h31+h32+h33)
-            ! viscous term
-            ! compute mu at the faces 
-            mux=muc*(1.d0 - 0.5d0*(phi(i,j,k)+phi(im,j,k))) + mud*0.5d0*(phi(i,j,k)+phi(im,j,k))
-            muy=muc*(1.d0 - 0.5d0*(phi(i,j,k)+phi(i,jm,k))) + mud*0.5d0*(phi(i,j,k)+phi(i,jm,k))
-            muz=muc*(1.d0 - 0.5d0*(phi(i,j,k)+phi(i,j,km))) + mud*0.5d0*(phi(i,j,k)+phi(i,j,km))
-            h11 = mux*(u(ip,j,k)-2.d0*u(i,j,k)+u(im,j,k))*ddxi
-            h12 = mux*(u(i,jp,k)-2.d0*u(i,j,k)+u(i,jm,k))*ddxi
-            h13 = mux*(u(i,j,kp)-2.d0*u(i,j,k)+u(i,j,km))*ddxi
-            h21 = muy*(v(ip,j,k)-2.d0*v(i,j,k)+v(im,j,k))*ddxi
-            h22 = muy*(v(i,jp,k)-2.d0*v(i,j,k)+v(i,jm,k))*ddxi
-            h23 = muy*(v(i,j,kp)-2.d0*v(i,j,k)+v(i,j,km))*ddxi
-            h31 = muz*(w(ip,j,k)-2.d0*w(i,j,k)+w(im,j,k))*ddxi
-            h32 = muz*(w(i,jp,k)-2.d0*w(i,j,k)+w(i,jm,k))*ddxi
-            h33 = muz*(w(i,j,kp)-2.d0*w(i,j,k)+w(i,j,km))*ddxi
+            ! viscous term (variable viscosity)
+            ! u term
+            h11 = 2.d0*(mu(i,j,k)*(u(ip,j,k)-u(i,j,k)) - mu(im,j,k)*(u(i,j,k)-u(im,j,k)))*ddxi
+            h12 = (tau12(i,jp,k) - tau12(i,j,k))*dxi
+            h13 = (tau13(i,j,kp) - tau13(i,j,k))*dxi
+            ! v term
+            h21 = (tau12(ip,j,k) - tau12(i,j,k))*dxi
+            h22 = 2.d0*(mu(i,j,k)*(v(i,jp,k)-v(i,j,k)) - mu(i,jm,k)*(v(i,j,k)-v(i,jm,k)))*ddxi
+            h23 = (tau23(i,j,kp) - tau23(i,j,k))*dxi
+            ! w term
+            h31 = (tau13(ip,j,k) - tau13(i,j,k))*dxi
+            h32 = (tau23(i,jp,k) - tau23(i,j,k))*dxi
+            h33 = 2.d0*(mu(i,j,k)*(w(i,j,kp)-w(i,j,k)) - mu(i,j,km)*(w(i,j,k)-w(i,j,km)))*ddxi
+            ! sum up in rhs
             rhsu(i,j,k)=rhsu(i,j,k)+(h11+h12+h13)*rhoi
             rhsv(i,j,k)=rhsv(i,j,k)+(h21+h22+h23)*rhoi
             rhsw(i,j,k)=rhsw(i,j,k)+(h31+h32+h33)*rhoi
@@ -1065,7 +1080,7 @@ do t=tstart,tfin
       call writefield(t,1)
       call writefield(t,2)
       call writefield(t,3)
-      call writefield(t,4)
+      !call writefield(t,4)
       #if phiflag == 1
          ! write phase-field (5)
          call writefield(t,5)
