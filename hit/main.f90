@@ -700,14 +700,10 @@ do t=tstart,tfin
    do k=1+halo_ext, piX%shape(3)-halo_ext
       do j=1+halo_ext, piX%shape(2)-halo_ext
          do i=1,nx
-            ip=i+1
-            jp=j+1
-            kp=k+1
             im=i-1
             jm=j-1
             km=k-1
             ! Manual periodicity ony along x (x-pencil), along y and z directions use halos
-            if (ip .gt. nx) ip=1  
             if (im .lt. 1) im=nx
             mu12=0.25d0*(mu(i,j,k) + mu(im,j,k) + mu(i,jm,k) + mu(im,jm,k))
             mu13=0.25d0*(mu(i,j,k) + mu(im,j,k) + mu(i,j,km) + mu(im,j,km))
@@ -718,6 +714,15 @@ do t=tstart,tfin
          enddo
       enddo
    enddo
+
+   !$acc host_data use_device(tau12,tau13,tau23)
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, tau12, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, tau12, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, tau13, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, tau13, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, tau23, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, tau23, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   !$acc end host_data
 
    !$acc parallel loop tile(16,4,2) 
    do k=1+halo_ext, piX%shape(3)-halo_ext
