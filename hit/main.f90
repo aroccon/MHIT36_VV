@@ -708,9 +708,9 @@ do t=tstart,tfin
             mu12=0.25d0*(mu(i,j,k) + mu(im,j,k) + mu(i,jm,k) + mu(im,jm,k))
             mu13=0.25d0*(mu(i,j,k) + mu(im,j,k) + mu(i,j,km) + mu(im,j,km))
             mu23=0.25d0*(mu(i,j,k) + mu(i,jm,k) + mu(i,j,km) + mu(i,jm,km))
-            tau12(i,j,k) = mu12*((u(i,j,k)-u(i,jm,k))*dxi + (v(i,j,k) - v(im,j,k))*dxi)
-            tau13(i,j,k) = mu13*((u(i,j,k)-u(i,j,km))*dxi + (w(i,j,k) - w(im,j,k))*dxi)
-            tau23(i,j,k) = mu23*((v(i,j,k)-v(i,j,km))*dxi + (w(i,j,k) - w(i,jm,k))*dxi)
+            tau12(i,j,k) = mu12*((u(i,j,k)-u(i,jm,k))*dxi + (v(i,j,k) - v(im,j,k))*dxi) !du/dy + dv/dx
+            tau13(i,j,k) = mu13*((u(i,j,k)-u(i,j,km))*dxi + (w(i,j,k) - w(im,j,k))*dxi) !du/dz + dw/dx
+            tau23(i,j,k) = mu23*((v(i,j,k)-v(i,j,km))*dxi + (w(i,j,k) - w(i,jm,k))*dxi) !dv/dz + dw/dy
          enddo
       enddo
    enddo
