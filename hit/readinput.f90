@@ -18,6 +18,7 @@ read(55,*) dump
 !Flow parameters
 read(55,*) inflow
 read(55,*) inphi
+read(55,*) insurf
 read(55,*) dt
 read(55,*) muc
 read(55,*) mud
@@ -31,9 +32,9 @@ read(55,*) k0
 read(55,*) radius
 read(55,*) sigma
 read(55,*) epsr   
-! particle parameters
-read(55,*) npart
-read(55,*) inpart
+! surfactant parameters
+read(55,*) diffs
+read(55,*) betas
  
 
 ! compute pre-defined constant 

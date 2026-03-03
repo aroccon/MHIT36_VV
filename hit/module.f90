@@ -6,7 +6,7 @@ module param
     double precision :: gamma, normag, weight
     double precision :: dt,muc,mud,rho !flow parameters
     double precision :: mux, muy, muz ! local viscosities
-    integer :: inflow, inphi, stage
+    integer :: inflow, inphi, insurf, stage
     double precision :: f1,f2,f3,k0 ! forcing parameters
     double precision :: radius, sigma, epsr, eps, pos, val, epsi, enum ! phase-field parameters
     double precision :: times,timef
@@ -22,14 +22,14 @@ module param
     -2404267990393.d0 / 2016746695238.d0, &
     -3550918686646.d0 / 2091501179385.d0, &
     -1275806237668.d0 / 842570457699.d0 ]
-double precision, parameter :: rk4b(5) = [ &
+   double precision, parameter :: rk4b(5) = [ &
     1432997174477.d0 / 9575080441755.d0, &
     5161836677717.d0 / 13612068292357.d0, &
     1720146321549.d0 / 2090206949498.d0, &
     3134564353537.d0 / 4481467310338.d0, &
     2277821191437.d0 / 14882151754819.d0 ]
+   double precision :: fxp, fxm, fyp, fym, fzp, fzm
 end module param
-
 
 module mpivar
    ! MPI variables
@@ -37,7 +37,6 @@ module mpivar
    integer :: localRank, localComm
    integer :: nidp1y, nidm1y, nidp1z, nidm1z
 end module mpivar
-
 
 module cudecompvar
    use cudecomp
@@ -76,16 +75,18 @@ module velocity
    double precision, allocatable :: mysin(:), mycos(:)
 end module velocity
 
-
 module phase
    double precision, allocatable :: phi(:,:,:), rhsphi(:,:,:), psidi(:,:,:), q_phi(:,:,:)
    double precision, allocatable :: normx(:,:,:), normy(:,:,:), normz(:,:,:)
    double precision :: curv
    double precision :: psidp, psidm, psidc
-   double precision :: fxp, fxm, fyp, fym, fzp, fzm
    double precision, allocatable :: fxst(:,:,:), fyst(:,:,:), fzst(:,:,:)
 end module phase
 
+module surf
+   double precision, allocatable :: surf(:,:,:), rhsurf(:,:,:), q_surf(:,:,:)
+   double precision :: diffs, betas
+end module surf
 
 
 

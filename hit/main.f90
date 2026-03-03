@@ -49,10 +49,20 @@ real(8) :: k2
 !integer :: il, jl, ig, jg
 integer :: offsets(3), xoff, yoff
 integer :: np(3)
-! Enable or disable phase field (acceleration eneabled by default)
+! Enable or disable phase field 
 #define phiflag 1
+! Enable or disable surfactant (phase-field must be enabled)
+#define surflag 1
 ! Enable or disable particle Lagrangian tracking (tracers)
 #define partflag 0
+
+! safety check
+#if surflag == 1
+#if phiflag == 0
+stop "Phase-field must be enabled to use surfactant; set phiflag to 1 or surflag to 0"
+#endif
+#endif
+
 
 !########################################################################################################################################
 ! 1. INITIALIZATION OF MPI AND cuDECOMP AUTOTUNING : START
@@ -285,13 +295,9 @@ allocate(phi(piX%shape(1),piX%shape(2),piX%shape(3)),q_phi(piX%shape(1),piX%shap
 allocate(normx(piX%shape(1),piX%shape(2),piX%shape(3)),normy(piX%shape(1),piX%shape(2),piX%shape(3)),normz(piX%shape(1),piX%shape(2),piX%shape(3)))
 allocate(fxst(piX%shape(1),piX%shape(2),piX%shape(3)),fyst(piX%shape(1),piX%shape(2),piX%shape(3)),fzst(piX%shape(1),piX%shape(2),piX%shape(3))) ! surface tension forces
 #endif
-
-! allocate arrays for transpositions and halo exchanges 
-CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_desc, work_d, nElemWork))
-CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_desc, work_halo_d, nElemWork_halo))
-! allocate arrays for transpositions
-CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_descD2Z, work_d_d2z, nElemWork_d2z))
-CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_descD2Z, work_halo_d_d2z, nElemWork_halo_d2z))
+# if surflag == 1
+allocate(surf(piX%shape(1),piX%shape(2),piX%shape(3)),rhsurf(piX%shape(1),piX%shape(2),piX%shape(3)),q_surf(piX%shape(1),piX%shape(2),piX%shape(3)))
+#endif
 
 #if partflag == 1
 ! Particle variables
@@ -302,6 +308,13 @@ allocate(order_p(1:nplocmax))
 allocate(buffvar1(1:ninfop,1:nploc))
 allocate(buffvar2(1:ninfop,1:nploc))
 #endif
+
+! allocate arrays for transpositions and halo exchanges 
+CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_desc, work_d, nElemWork))
+CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_desc, work_halo_d, nElemWork_halo))
+! allocate arrays for transpositions
+CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_descD2Z, work_d_d2z, nElemWork_d2z))
+CHECK_CUDECOMP_EXIT(cudecompMalloc(handle, grid_descD2Z, work_halo_d_d2z, nElemWork_halo_d2z))
 !########################################################################################################################################
 ! END STEP2: ALLOCATE ARRAYS
 !########################################################################################################################################
@@ -344,15 +357,11 @@ if (restart .eq. 1) then !restart, ignore inflow and read the tstart field
 endif
 
 ! update halo cells along y and z directions (enough only if pr and pc are non-unitary)
-!$acc host_data use_device(u)
+!$acc host_data use_device(u,v,w)
 CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, u, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
 CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, u, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
-!$acc end host_data 
-!$acc host_data use_device(v)
 CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, v, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
 CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, v, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
-!$acc end host_data 
-!$acc host_data use_device(w)
 CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, w, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
 CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, w, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
 !$acc end host_data 
@@ -397,23 +406,45 @@ call MPI_Allreduce(umax,gumax,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD, ier
    !$acc end host_data 
 #endif
 
-#if partflag == 1
-  if (restart .eq. 0) then
-     if (rank.eq.0) write(*,*) 'Initialize particles (fresh start)'
-     if (inpart .eq. 1) then
-        if (rank.eq.0) write(*,*) 'Random Position whole Domain'
-        call particlegenerator(inpart)
-     endif
-      if (inpart .eq. 2) then
-         if (rank.eq.0)  write(*,*) 'Random Position in Drops'
-         call particlegenerator(inpart)
+! initialize phase-field
+#if surflag == 1
+   if (restart .eq. 0) then
+      if (rank.eq.0) write(*,*) 'Initialize surfactant'
+      if (insurf .eq. 0) then
+         if (rank.eq.0) write(*,*) 'Gradient of phi'
+         do k = 1+halo_ext, piX%shape(3)-halo_ext
+            do j = 1+halo_ext, piX%shape(2)-halo_ext
+               do i = 1, piX%shape(1)
+                  ip=i+1 
+                  im=i-1
+                  jp=j+1 
+                  jm=j-1
+                  kp=k+1 
+                  km=k-1
+                  if (ip > nx) ip=1
+                  if (im < 1)  im=nx
+                  val = abs(0.5d0*(phi(ip,j,k)-phi(im,j,k))*dxi + 0.5d0*(phi(i,jp,k)-phi(i,jm,k))*dxi + 0.5d0*(phi(i,j,kp)-phi(i,j,k-1))*dxi)
+                  surf(i,j,k) = val
+               enddo
+            enddo
+         enddo
       endif
-  endif
- !   if (restart .eq. 1) then
- !      write(*,*) "Initialize phase-field (restart, from output folder), iteration:", tstart
- !      call readfield_restart(tstart,5)
- !   endif
+      if (inphi .eq. 1) then
+         if (rank.eq.0)  write(*,*) "Initialize surfactant from data"
+         call readfield(6)
+      endif
+   endif
+   if (restart .eq. 1) then
+      if (rank == 0) write(*,*) "Initialize surfactant (restart, from output folder), iteration:", tstart
+      call readfield_restart(tstart,6)
+   endif
+   ! update halo
+   !$acc host_data use_device(surf)
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   !$acc end host_data 
 #endif
+
 
 !Save initial fields (only if a fresh start)
 if (restart .eq. 0) then
@@ -423,7 +454,10 @@ if (restart .eq. 0) then
    call writefield(tstart,3)
    !call writefield(tstart,4)
    #if phiflag == 1
-      call writefield(tstart,5)
+   call writefield(tstart,5)
+   #endif
+   #if surflag == 1
+   call writefield(tstart,6)
    #endif
 endif
 
@@ -445,11 +479,6 @@ gamma=1.d0*gumax
 !$acc data copyin(piX)
 !$acc data create(rhsu_o, rhsv_o, rhsw_o)
 !$acc data copyin(mysin, mycos)
-#if partflag == 1
-!$acc data copy(part,partbuff)
-!$acc data create(vec_p, order_p)
-!$acc data create(buffvar1,buffvar2)
-#endif
 call cpu_time(t_start)
 
 ! Start temporal loop
@@ -460,63 +489,11 @@ do t=tstart,tfin
    ! call nvtxStartRange("Iteration "//itcount,t)
     if (rank.eq.0) write(*,*) "Time step",t,"of",tfin
     call cpu_time(times)
-
-   !########################################################################################################################################
-   ! START STEP 4: PARTICLES (TRACERS)
-   !########################################################################################################################################
-   #if partflag == 1
-      ! Operations:
-      ! 4.1 Perform Interpolation (consider passing to trilinear: more accurate, but way more expensive)
-      ! 4.2 Integrate with Adams-Bashforth
-      ! 4.3 Order and transfer in y
-      ! 4.4 Order and transfer in z 
-      ! 4.5 Check Leakage of Particles
-
-      call LinearInterpolation()
-      ! Particle Tracker Integration
-      ! Two-Step Adams-Bashfort (Euler for first step)
-      !$acc parallel loop collapse(2) default(present)
-      do j = 0, 2
-         do i = 1, nploc
-            part(i,Ixp+j)=part(i,Ixp+j)+&
-                     dt*(alpha*part(i,Iup+j)-beta*part(i,Iup1+j))
-         enddo
-      enddo
-
-      ! Transfer in y
-      call SortPartY()
-      call CountPartTransfY()
-      call SendPartUP(2)
-      call SendPartDOWN(2)
- 
-      ! Transfer in z
-      call SortPartZ()
-      call CountPartTransfZ()
-      call SendPartUP(3)
-      call SendPartDOWN(3)
-
-      ! Check Particles esacping the domain (leakage)
-      call ParticlesLeakage()
-      ! Shift data for next step
-      !$acc parallel loop collapse(2) default(present)
-      do j = 0, 2
-         do i = 1, nploc
-            part(i,Iup1+j)=part(i,Iup+j)
-         enddo
-      enddo
-      write(*,*) 'rank',rank, 'nploc',nploc
-   #endif
-   !########################################################################################################################################
-   ! END STEP 4: PARTICLES
-   !########################################################################################################################################
-
    
-   ! (uncomment for profiling)
-   ! call nvtxStartRange("Phase-field")
    !########################################################################################################################################
-   ! START STEP 5: PHASE-FIELD SOLVER (EXPLICIT)
+   ! START STEP 5: PHASE-FIELD SOLVER (RK4 EXPLICIT)
    !########################################################################################################################################
-    #if phiflag == 1
+   #if phiflag == 1
    ! 4.2 Get phi at n+1 using RK4 + skew-symmetric splitting
    gamma=1.d0*gumax
    ! Low-storage auxiliary register
@@ -636,7 +613,12 @@ do t=tstart,tfin
             val = max(0.0d0, min(phi(i,j,k), 1.0d0))
             phi(i,j,k) = val
             psidi(i,j,k) = eps*log((val+enum)/(1.d0-val+enum))
-            mu(i,j,k)= muc*(1.d0 - phi(i,j,k)) + mud*phi(i,j,k)
+            #if phiflag == 1
+            mu(i,j,k)= muc*(1.d0 - val) + mud*val
+            #endif
+            #if phiflag == 0
+            mu(i,j,k)= muc  ! if phase-field is disablled, only muc is considered, and is constant in the domain
+            #endif
          enddo
       enddo
    enddo
@@ -682,6 +664,82 @@ do t=tstart,tfin
    !########################################################################################################################################
 
 
+
+
+   !########################################################################################################################################
+   ! START STEP 5: SURFACTANT (RK4 EXPLICIT)
+   !########################################################################################################################################
+   #if surfflag == 1
+   ! 4.2 Get surf at n+1 using RK4 + skew-symmetric splitting
+   gamma=1.d0*gumax
+   ! Low-storage auxiliary register
+   !$acc parallel loop collapse(3)
+   do k=1+halo_ext, piX%shape(3)-halo_ext
+      do j=1+halo_ext, piX%shape(2)-halo_ext
+         do i=1,nx
+            q_surf(i,j,k) = 0.d0
+         enddo
+      enddo
+   enddo
+
+   ! Low storage RK4 - 2 registers - 5 stages - Carpenter-Kennedy 
+   do stage = 1, 5
+      ! Compute all the fluxes at the faces and add them to rhsphi
+      ! u,v,w are already updated from NS of init
+      ! skew-symmetric splitting for all contritbuions, all computed as a divergence
+      !$acc parallel loop collapse(3) default(present)
+      do k=1+halo_ext, piX%shape(3)-halo_ext
+         do j=1+halo_ext, piX%shape(2)-halo_ext
+            do i=1,nx
+               im=i-1
+               ip=i+1 
+               jm=j-1
+               jp=j+1
+               km=k-1 
+               kp=k+1
+               if (ip .gt. nx) ip=1
+               if (im .lt. 1)  im=nx
+               ! Advection fluxes
+               fxp = u(ip,j,k)*0.5d0*(surf(ip,j,k) + surf(i,j,k))
+               fxm =  u(i,j,k)*0.5d0*(surf(im,j,k) + surf(i,j,k))
+               fyp = v(i,jp,k)*0.5d0*(surf(i,jp,k) + surf(i,j,k))
+               fym =  v(i,j,k)*0.5d0*(surf(i,jm,k) + surf(i,j,k))
+               fzp = w(i,j,kp)*0.5d0*(surf(i,j,kp) + surf(i,j,k))
+               fzm =  w(i,j,k)*0.5d0*(surf(i,j,km) + surf(i,j,k))
+               rhsurf(i,j,k) = - (fxp - fxm)*dxi  - (fyp - fym)*dxi - (fzp - fzm)*dxi
+               ! Diffusion fluxes
+               fxp = diffs*eps*(surf(ip,j,k)-surf(i,j,k))*dxi
+               fxm = diffs*eps*(surf(i,j,k)-surf(im,j,k))*dxi
+               fyp = diffs*eps*(surf(i,jp,k)-surf(i,j,k))*dxi
+               fym = diffs*eps*(surf(i,j,k)-surf(i,jm,k))*dxi
+               fzp = diffs*eps*(surf(i,j,kp)-surf(i,j,k))*dxi
+               fzm = diffs*eps*(surf(i,j,k)-surf(i,j,km))*dxi
+               rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
+               ! Sharpening fluxes
+               fxp = -2.d0*(0.5d0 - 0.5d0*(phi(ip,j,k)+phi(i,j,k)))*0.5d0*(normx(ip,j,k)+normx(i,j,k))*0.5d0*(surf(ip,j,k)+surf(i,j,k))*epsi
+               fxm = -2.d0*(0.5d0 - 0.5d0*(phi(im,j,k)+phi(i,j,k)))*0.5d0*(normx(im,j,k)+normx(i,j,k))*0.5d0*(surf(im,j,k)+surf(i,j,k))*epsi
+               fyp = -2.d0*(0.5d0 - 0.5d0*(phi(i,jp,k)+phi(i,j,k)))*0.5d0*(normy(i,jp,k)+normy(i,j,k))*0.5d0*(surf(i,jp,k)+surf(i,j,k))*epsi
+               fym = -2.d0*(0.5d0 - 0.5d0*(phi(i,jm,k)+phi(i,j,k)))*0.5d0*(normy(i,jm,k)+normy(i,j,k))*0.5d0*(surf(i,jm,k)+surf(i,j,k))*epsi
+               fzp = -2.d0*(0.5d0 - 0.5d0*(phi(i,j,kp)+phi(i,j,k)))*0.5d0*(normz(i,j,kp)+normz(i,j,k))*0.5d0*(surf(i,j,kp)+surf(i,j,k))*epsi
+               fzm = -2.d0*(0.5d0 - 0.5d0*(phi(i,j,km)+phi(i,j,k)))*0.5d0*(normz(i,j,km)+normz(i,j,k))*0.5d0*(surf(i,j,km)+surf(i,j,k))*epsi
+               rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
+               q_surf(i,j,k) = rk4a(stage)*q_surf(i,j,k) + dt*rhsurf(i,j,k)
+               surf(i,j,k)   = surf(i,j,k) + rk4b(stage)*q_surf(i,j,k)
+            enddo
+         enddo
+      enddo
+   enddo  ! end RK4 stages
+
+   !$acc host_data use_device(surf)
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   !$acc end host_data
+
+   ! call nvtxEndRange
+    #endif
+   !########################################################################################################################################
+   ! END STEP 5: PHASE-FIELD SOLVER 
+   !########################################################################################################################################
 
 
 
@@ -890,8 +948,6 @@ do t=tstart,tfin
    ! START STEP 7: POISSON SOLVER FOR PRESSURE
    !########################################################################################################################################
    ! 7.1 Compute rhs of Poisson equation div*ustar: divergence at the cell center 
-   ! call nvtxStartRange("Poisson")
-   ! call nvtxStartRange("compute RHS")
    !$acc kernels
    do k=1+halo_ext, piX%shape(3)-halo_ext
       do j=1+halo_ext, piX%shape(2)-halo_ext
@@ -907,9 +963,6 @@ do t=tstart,tfin
       enddo
    enddo
    !$acc end kernels
-   ! (uncomment for profiling)
-   ! call nvtxEndRange
-   ! call nvtxStartRange("FFT forward w/ transpositions")
    !$acc host_data use_device(rhsp)
    status = cufftExecD2Z(planXf, rhsp, psi_d)
    if (status /= CUFFT_SUCCESS) write(*,*) 'X forward error: ', status
@@ -956,8 +1009,6 @@ do t=tstart,tfin
    ! specify mean (corrects division by zero wavenumber above)
    if (xoff == 0 .and. yoff == 0) phi3d(1,1,1) = 0.0
    !$acc end kernels
-   ! call nvtxEndRange
-   ! call nvtxStartRange("FFT backwards w/ transpositions")
 
    ! psi(kz,kx,ky) -> psi(z,kx,ky)
    status = cufftExecZ2Z(planZ, psi_d, psi_d, CUFFT_INVERSE)
@@ -974,7 +1025,6 @@ do t=tstart,tfin
    status = cufftExecZ2D(planXb, psi_d, p)
    if (status /= CUFFT_SUCCESS) write(*,*) 'X inverse error: ', status
    !$acc end host_data
-   ! call nvtxEndRange
 
    !$acc host_data use_device(p)
    ! update halo nodes with pressure (needed for the pressure correction step), using device variable no need to use host-data
@@ -1087,8 +1137,9 @@ do t=tstart,tfin
       call writefield(t,3)
       !call writefield(t,4)
       #if phiflag == 1
-         ! write phase-field (5)
-         call writefield(t,5)
+      ! write phase-field (5)
+      call writefield(t,5)
+      call writefield(t,6)
       #endif
    endif
    !########################################################################################################################################
@@ -1102,24 +1153,11 @@ enddo
 call cpu_time(t_end)
 elapsed = t_end-t_start
 if (rank .eq. 0) write(*,*)  'Elapsed time (seconds):', elapsed
-#if partflag == 1
-!$acc end data
-!$acc end data
-!$acc end data
-#endif
 !$acc end data
 !$acc end data
 !$acc end data
 
-#if partflag == 1
-! Particle variables
-deallocate(part)
-deallocate(partbuff)
-deallocate(vec_p)
-deallocate(order_p)
-deallocate(buffvar1)
-deallocate(buffvar2)
-#endif
+
 
 ! Remove allocated variables (add new)
 deallocate(x_ext)
