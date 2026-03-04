@@ -4,8 +4,8 @@
 subroutine readinput
 use velocity
 use phase
-use surfactant
 use param
+use surfactant
 use mpivar
 use particles
 implicit none

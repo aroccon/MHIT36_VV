@@ -7,6 +7,7 @@ use cufft
 use mpi
 use velocity 
 use phase
+use surfactant
 use particles
 use param
 use mpivar
@@ -184,12 +185,6 @@ nElemZ_d2z = piZ_d2z%size
 CHECK_CUDECOMP_EXIT(cudecompGetTransposeWorkspaceSize(handle, grid_descD2Z, nElemWork_d2z))
 CHECK_CUDECOMP_EXIT(cudecompGetHaloWorkspaceSize(handle, grid_descD2Z, 1, halo, nElemWork_halo_d2z))
 
-! Get the global rank of neighboring processes in PiX config (required only for particles)
-CHECK_CUDECOMP_EXIT(cudecompGetShiftedRank(handle, grid_desc, 1, 2, 1  , .true. , nidp1y))
-CHECK_CUDECOMP_EXIT(cudecompGetShiftedRank(handle, grid_desc, 1, 2, -1 , .true. , nidm1y))
-CHECK_CUDECOMP_EXIT(cudecompGetShiftedRank(handle, grid_desc, 1, 3, 1  , .true. , nidp1z))
-CHECK_CUDECOMP_EXIT(cudecompGetShiftedRank(handle, grid_desc, 1, 3, -1 , .true. , nidm1z))
-
 
 ! CUFFT initialization -- Create Plans
 ! Forward 1D FFT in X: D2Z
@@ -221,23 +216,6 @@ do i = 2, nx
    x(i) = x(i-1) + dx
 enddo
 
-x_ext(1:nx) = x(1:nx)
-x_ext(nx+1) = lx
-
-! Offsets in the X-pencil decomposition
-pix_yoff = pix%lo(2)-1
-pix_zoff = pix%lo(3)-1
-
-! Boundaries of each PiX pencil
-yinf = x_ext( pix%lo(2) )
-ysup = x_ext( pix%hi(2) + 1 )
-zinf = x_ext( pix%lo(3) )
-zsup = x_ext( pix%hi(3) + 1 )   
-
-! Physical size of each PiX pencil
-lyloc = ysup - yinf
-lzloc = zsup - zinf
-
 ! define wavenumbers
 allocate(kx(nx))
 do i = 1, nx/2
@@ -256,10 +234,6 @@ do i=1,nx
    ! compute here the cos to avoid multiple computations of cos
    mycos(i)=cos(k0*x(i)+dx/2)
 enddo
-
-! Initial distribution of particles among the processes
-nploc = npart/ranks
-nplocmax = nploc*2
 
 !########################################################################################################################################
 ! 1. INITIALIZATION AND cuDECOMP AUTOTUNING : END
@@ -295,18 +269,9 @@ allocate(phi(piX%shape(1),piX%shape(2),piX%shape(3)),q_phi(piX%shape(1),piX%shap
 allocate(normx(piX%shape(1),piX%shape(2),piX%shape(3)),normy(piX%shape(1),piX%shape(2),piX%shape(3)),normz(piX%shape(1),piX%shape(2),piX%shape(3)))
 allocate(fxst(piX%shape(1),piX%shape(2),piX%shape(3)),fyst(piX%shape(1),piX%shape(2),piX%shape(3)),fzst(piX%shape(1),piX%shape(2),piX%shape(3))) ! surface tension forces
 #endif
+!SURF FLAG
 # if surflag == 1
 allocate(surf(piX%shape(1),piX%shape(2),piX%shape(3)),rhsurf(piX%shape(1),piX%shape(2),piX%shape(3)),q_surf(piX%shape(1),piX%shape(2),piX%shape(3)))
-#endif
-
-#if partflag == 1
-! Particle variables
-allocate(part(1:nplocmax,1:ninfop))
-allocate(partbuff(1:nplocmax,1:ninfop))
-allocate(vec_p(1:nplocmax))
-allocate(order_p(1:nplocmax))
-allocate(buffvar1(1:ninfop,1:nploc))
-allocate(buffvar2(1:ninfop,1:nploc))
 #endif
 
 ! allocate arrays for transpositions and halo exchanges 
@@ -610,7 +575,7 @@ do t=tstart,tfin
    do k=1, piX%shape(3)
       do j=1, piX%shape(2)
          do i=1,nx
-            !val = max(0.0d0, min(phi(i,j,k), 1.0d0))
+            val = max(0.0d0, min(phi(i,j,k), 1.0d0))
             phi(i,j,k) = val
             psidi(i,j,k) = eps*log((val+enum)/(1.d0-val+enum))
             #if phiflag == 1
@@ -669,8 +634,9 @@ do t=tstart,tfin
    !########################################################################################################################################
    ! START STEP 5: SURFACTANT (RK4 EXPLICIT)
    !########################################################################################################################################
-   #if surfflag == 1
+   #if surflag == 1
    ! 4.2 Get surf at n+1 using RK4 + skew-symmetric splitting
+   gamma=1.d0*gumax
    ! Low-storage auxiliary register
    !$acc parallel loop collapse(3)
    do k=1+halo_ext, piX%shape(3)-halo_ext
@@ -683,7 +649,14 @@ do t=tstart,tfin
 
    ! Low storage RK4 - 2 registers - 5 stages - Carpenter-Kennedy 
    do stage = 1, 5
-      ! Compute all the fluxes at the faces and add them to rhsurf
+
+      !$acc host_data use_device(surf)
+      CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+      CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+      !$acc end host_data 
+
+      ! Compute all the fluxes at the faces and add them to rhsphi
+      ! u,v,w are already updated from NS of init
       ! skew-symmetric splitting for all contritbuions, all computed as a divergence
       !$acc parallel loop collapse(3) default(present)
       do k=1+halo_ext, piX%shape(3)-halo_ext
@@ -714,12 +687,12 @@ do t=tstart,tfin
                fzm = diffs*eps*(surf(i,j,k)-surf(i,j,km))*dxi
                rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
                ! Sharpening fluxes
-               fxp = -2.d0*(0.5d0 - 0.5d0*(phi(ip,j,k)+phi(i,j,k)))*0.5d0*(normx(ip,j,k)+normx(i,j,k))*0.5d0*(surf(ip,j,k)+surf(i,j,k))*epsi
-               fxm = -2.d0*(0.5d0 - 0.5d0*(phi(im,j,k)+phi(i,j,k)))*0.5d0*(normx(im,j,k)+normx(i,j,k))*0.5d0*(surf(im,j,k)+surf(i,j,k))*epsi
-               fyp = -2.d0*(0.5d0 - 0.5d0*(phi(i,jp,k)+phi(i,j,k)))*0.5d0*(normy(i,jp,k)+normy(i,j,k))*0.5d0*(surf(i,jp,k)+surf(i,j,k))*epsi
-               fym = -2.d0*(0.5d0 - 0.5d0*(phi(i,jm,k)+phi(i,j,k)))*0.5d0*(normy(i,jm,k)+normy(i,j,k))*0.5d0*(surf(i,jm,k)+surf(i,j,k))*epsi
-               fzp = -2.d0*(0.5d0 - 0.5d0*(phi(i,j,kp)+phi(i,j,k)))*0.5d0*(normz(i,j,kp)+normz(i,j,k))*0.5d0*(surf(i,j,kp)+surf(i,j,k))*epsi
-               fzm = -2.d0*(0.5d0 - 0.5d0*(phi(i,j,km)+phi(i,j,k)))*0.5d0*(normz(i,j,km)+normz(i,j,k))*0.5d0*(surf(i,j,km)+surf(i,j,k))*epsi
+               fxp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(ip,j,k)+phi(i,j,k)))*0.5d0*(normx(ip,j,k)+normx(i,j,k))*0.5d0*(surf(ip,j,k)+surf(i,j,k))*epsi
+               fxm = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(im,j,k)+phi(i,j,k)))*0.5d0*(normx(im,j,k)+normx(i,j,k))*0.5d0*(surf(im,j,k)+surf(i,j,k))*epsi
+               fyp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,jp,k)+phi(i,j,k)))*0.5d0*(normy(i,jp,k)+normy(i,j,k))*0.5d0*(surf(i,jp,k)+surf(i,j,k))*epsi
+               fym = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,jm,k)+phi(i,j,k)))*0.5d0*(normy(i,jm,k)+normy(i,j,k))*0.5d0*(surf(i,jm,k)+surf(i,j,k))*epsi
+               fzp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,j,kp)+phi(i,j,k)))*0.5d0*(normz(i,j,kp)+normz(i,j,k))*0.5d0*(surf(i,j,kp)+surf(i,j,k))*epsi
+               fzm = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,j,km)+phi(i,j,k)))*0.5d0*(normz(i,j,km)+normz(i,j,k))*0.5d0*(surf(i,j,km)+surf(i,j,k))*epsi
                rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
                q_surf(i,j,k) = rk4a(stage)*q_surf(i,j,k) + dt*rhsurf(i,j,k)
                surf(i,j,k)   = surf(i,j,k) + rk4b(stage)*q_surf(i,j,k)
