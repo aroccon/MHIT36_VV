@@ -54,20 +54,18 @@ integer :: np(3)
 #define phiflag 1
 ! Enable or disable surfactant (phase-field must be enabled)
 #define surflag 1
-! Enable or disable particle Lagrangian tracking (tracers)
-#define partflag 0
 
+
+
+!########################################################################################################################################
+! 1. INITIALIZATION OF MPI AND cuDECOMP AUTOTUNING : START
+!########################################################################################################################################
 ! safety check
 #if surflag == 1
 #if phiflag == 0
 stop "Phase-field must be enabled to use surfactant; set phiflag to 1 or surflag to 0"
 #endif
 #endif
-
-
-!########################################################################################################################################
-! 1. INITIALIZATION OF MPI AND cuDECOMP AUTOTUNING : START
-!########################################################################################################################################
 ! MPI initialization, put in rank the local MPI rank number and ranks total number
 ! Same procedura defined in the cuDecomp documentation
 call mpi_init(ierr)
@@ -371,7 +369,7 @@ call MPI_Allreduce(umax,gumax,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD, ier
    !$acc end host_data 
 #endif
 
-! initialize phase-field
+! initialize surfactant
 #if surflag == 1
    if (restart .eq. 0) then
       if (rank.eq.0) write(*,*) 'Initialize surfactant'
@@ -412,14 +410,12 @@ call MPI_Allreduce(umax,gumax,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD, ier
    !$acc end host_data 
 #endif
 
-
 !Save initial fields (only if a fresh start)
 if (restart .eq. 0) then
    if (rank.eq.0) write(*,*) "Save initial fields"
    call writefield(tstart,1)
    call writefield(tstart,2)
    call writefield(tstart,3)
-   !call writefield(tstart,4)
    #if phiflag == 1
    call writefield(tstart,5)
    #endif
@@ -640,14 +636,9 @@ do t=tstart,tfin
    do k=1, piX%shape(3)
       do j=1, piX%shape(2)
          do i=1,nx
-            phi(i,j,k) = val
+            val = max(0.0d0, min(phi(i,j,k), 1.0d0))
             psidi(i,j,k) = eps*log((val+enum)/(1.d0-val+enum))
-            #if phiflag == 1
             mu(i,j,k)= muc*(1.d0 - val) + mud*val
-            #endif
-            #if phiflag == 0
-            mu(i,j,k)= muc  ! if phase-field is disablled, only muc is considered, and is constant in the domain
-            #endif
          enddo
       enddo
    enddo
@@ -770,19 +761,31 @@ do t=tstart,tfin
             rhsu(i,j,k)=-(h11+h12+h13)
             rhsv(i,j,k)=-(h21+h22+h23)
             rhsw(i,j,k)=-(h31+h32+h33)
-            ! viscous term (variable viscosity)
-            ! u term
+            ! viscous terms
+            #if phiflag == 0
+            ! viscous term (Single-phase)
+            h11 = muc*(u(ip,j,k)-2.d0*u(i,j,k)+u(im,j,k))*ddxi
+            h12 = muc*(u(i,jp,k)-2.d0*u(i,j,k)+u(i,jm,k))*ddxi
+            h13 = muc*(u(i,j,kp)-2.d0*u(i,j,k)+u(i,j,km))*ddxi
+            h21 = muc*(v(ip,j,k)-2.d0*v(i,j,k)+v(im,j,k))*ddxi
+            h22 = muc*(v(i,jp,k)-2.d0*v(i,j,k)+v(i,jm,k))*ddxi
+            h23 = muc*(v(i,j,kp)-2.d0*v(i,j,k)+v(i,j,km))*ddxi
+            h31 = muc*(w(ip,j,k)-2.d0*w(i,j,k)+w(im,j,k))*ddxi
+            h32 = muc*(w(i,jp,k)-2.d0*w(i,j,k)+w(i,jm,k))*ddxi
+            h33 = muc*(w(i,j,kp)-2.d0*w(i,j,k)+w(i,j,km))*ddxi
+            #endif
+            #if phiflag == 1
+            ! viscous term (multiphase, variable viscosity)
             h11 = 2.d0*(mu(i,j,k)*(u(ip,j,k)-u(i,j,k)) - mu(im,j,k)*(u(i,j,k)-u(im,j,k)))*ddxi
             h12 = (tau12(i,jp,k) - tau12(i,j,k))*dxi
             h13 = (tau13(i,j,kp) - tau13(i,j,k))*dxi
-            ! v term
             h21 = (tau12(ip,j,k) - tau12(i,j,k))*dxi
             h22 = 2.d0*(mu(i,j,k)*(v(i,jp,k)-v(i,j,k)) - mu(i,jm,k)*(v(i,j,k)-v(i,jm,k)))*ddxi
             h23 = (tau23(i,j,kp) - tau23(i,j,k))*dxi
-            ! w term
             h31 = (tau13(ip,j,k) - tau13(i,j,k))*dxi
             h32 = (tau23(i,jp,k) - tau23(i,j,k))*dxi
             h33 = 2.d0*(mu(i,j,k)*(w(i,j,kp)-w(i,j,k)) - mu(i,j,km)*(w(i,j,k)-w(i,j,km)))*ddxi
+            #endif
             ! sum up in rhs
             rhsu(i,j,k)=rhsu(i,j,k)+(h11+h12+h13)*rhoi
             rhsv(i,j,k)=rhsv(i,j,k)+(h21+h22+h23)*rhoi
@@ -1088,8 +1091,9 @@ do t=tstart,tfin
       call writefield(t,3)
       !call writefield(t,4)
       #if phiflag == 1
-      ! write phase-field (5)
       call writefield(t,5)
+      #endif
+      #if surflag == 1
       call writefield(t,6)
       #endif
    endif

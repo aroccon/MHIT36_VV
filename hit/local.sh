@@ -4,7 +4,7 @@ MANPATH=$MANPATH:$NVCOMPILERS/$NVARCH/25.9/compilers/man; export MANPATH
 PATH=$NVCOMPILERS/$NVARCH/25.9/compilers/bin:$PATH; export PATH
 export PATH=$NVCOMPILERS/$NVARCH/25.9/comm_libs/mpi/bin:$PATH
 export MANPATH=$MANPATH:$NVCOMPILERS/$NVARCH/25.9/comm_libs/mpi/man
-LD_LIBRARY_PATH=/home/milton/MHIT36/cuDecomp/build/lib
+LD_LIBRARY_PATH=/home/milton/MHIT36_VV/cuDecomp/build/lib
 #clean folder output
 rm -rf output
 mkdir output
