@@ -388,8 +388,10 @@ call MPI_Allreduce(umax,gumax,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD, ier
                   km=k-1
                   if (ip > nx) ip=1
                   if (im < 1)  im=nx
-                  val = abs(0.5d0*(phi(ip,j,k)-phi(im,j,k))*dxi + 0.5d0*(phi(i,jp,k)-phi(i,jm,k))*dxi + 0.5d0*(phi(i,j,kp)-phi(i,j,k-1))*dxi)
-                  surf(i,j,k) = val
+                  val =       (0.5d0*(phi(ip,j,k)-phi(im,j,k))*dxi)**2
+                  val = val + (0.5d0*(phi(i,jp,k)-phi(i,jm,k))*dxi)**2
+                  val = val + (0.5d0*(phi(i,j,kp)-phi(i,j,km))*dxi)**2
+                  surf(i,j,k) = sqrt(val)
                enddo
             enddo
          enddo
@@ -456,7 +458,7 @@ do t=tstart,tfin
     call cpu_time(times)
    
    !########################################################################################################################################
-   ! START STEP 5: PHASE-FIELD SOLVER (RK4 EXPLICIT)
+   ! START STEP 5: PHASE-FIELD SOLVER (RK4 EXPLICIT) PHASE-FIELD + SURFACTANT (IF ENABLED)
    !########################################################################################################################################
    #if phiflag == 1
    ! 4.2 Get phi at n+1 using RK4 + skew-symmetric splitting
@@ -467,6 +469,9 @@ do t=tstart,tfin
       do j=1+halo_ext, piX%shape(2)-halo_ext
          do i=1,nx
             q_phi(i,j,k) = 0.d0
+            #if surflag == 1
+            q_surf(i,j,k) = 0.d0
+            #endif
          enddo
       enddo
    enddo
@@ -477,6 +482,12 @@ do t=tstart,tfin
       CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, phi, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
       CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, phi, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
       !$acc end host_data
+      #if surflag == 1
+      !$acc host_data use_device(surf)
+      CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+      CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+      !$acc end host_data
+      #endif
 
       ! Compute psidi from current phi, in both halo and non halo cells and then the normals
       !$acc kernels
@@ -525,7 +536,6 @@ do t=tstart,tfin
       !$acc end host_data
 
       ! Compute all the fluxes at the faces and add them to rhsphi
-      ! u,v,w are already updated from NS of init
       ! skew-symmetric splitting for all contritbuions, all computed as a divergence
       !$acc parallel loop collapse(3) default(present)
       do k=1+halo_ext, piX%shape(3)-halo_ext
@@ -568,14 +578,68 @@ do t=tstart,tfin
             enddo
          enddo
       enddo
+
+      ! Same approach for surfactant if enabled 
+      #if surflag == 1
+      !$acc parallel loop collapse(3) default(present)
+      do k=1+halo_ext, piX%shape(3)-halo_ext
+         do j=1+halo_ext, piX%shape(2)-halo_ext
+            do i=1,nx
+               im=i-1
+               ip=i+1 
+               jm=j-1
+               jp=j+1
+               km=k-1 
+               kp=k+1
+               if (ip .gt. nx) ip=1
+               if (im .lt. 1)  im=nx
+               ! Advection fluxes
+               fxp = u(ip,j,k)*0.5d0*(surf(ip,j,k) + surf(i,j,k))
+               fxm =  u(i,j,k)*0.5d0*(surf(im,j,k) + surf(i,j,k))
+               fyp = v(i,jp,k)*0.5d0*(surf(i,jp,k) + surf(i,j,k))
+               fym =  v(i,j,k)*0.5d0*(surf(i,jm,k) + surf(i,j,k))
+               fzp = w(i,j,kp)*0.5d0*(surf(i,j,kp) + surf(i,j,k))
+               fzm =  w(i,j,k)*0.5d0*(surf(i,j,km) + surf(i,j,k))
+               rhsurf(i,j,k) = - (fxp - fxm)*dxi  - (fyp - fym)*dxi - (fzp - fzm)*dxi
+               ! Diffusion fluxes
+               fxp = diffs*eps*(surf(ip,j,k)-surf(i,j,k))*dxi
+               fxm = diffs*eps*(surf(i,j,k)-surf(im,j,k))*dxi
+               fyp = diffs*eps*(surf(i,jp,k)-surf(i,j,k))*dxi
+               fym = diffs*eps*(surf(i,j,k)-surf(i,jm,k))*dxi
+               fzp = diffs*eps*(surf(i,j,kp)-surf(i,j,k))*dxi
+               fzm = diffs*eps*(surf(i,j,k)-surf(i,j,km))*dxi
+               rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
+               ! Sharpening fluxes
+               fxp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(ip,j,k)+phi(i,j,k)))*0.5d0*(normx(ip,j,k)+normx(i,j,k))*0.5d0*(surf(ip,j,k)+surf(i,j,k))*epsi
+               fxm = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(im,j,k)+phi(i,j,k)))*0.5d0*(normx(im,j,k)+normx(i,j,k))*0.5d0*(surf(im,j,k)+surf(i,j,k))*epsi
+               fyp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,jp,k)+phi(i,j,k)))*0.5d0*(normy(i,jp,k)+normy(i,j,k))*0.5d0*(surf(i,jp,k)+surf(i,j,k))*epsi
+               fym = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,jm,k)+phi(i,j,k)))*0.5d0*(normy(i,jm,k)+normy(i,j,k))*0.5d0*(surf(i,jm,k)+surf(i,j,k))*epsi
+               fzp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,j,kp)+phi(i,j,k)))*0.5d0*(normz(i,j,kp)+normz(i,j,k))*0.5d0*(surf(i,j,kp)+surf(i,j,k))*epsi
+               fzm = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,j,km)+phi(i,j,k)))*0.5d0*(normz(i,j,km)+normz(i,j,k))*0.5d0*(surf(i,j,km)+surf(i,j,k))*epsi
+               rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
+               q_surf(i,j,k) = rk4a(stage)*q_surf(i,j,k) + dt*rhsurf(i,j,k)
+               surf(i,j,k)   = surf(i,j,k) + rk4b(stage)*q_surf(i,j,k)
+            enddo
+         enddo
+      enddo
+      #endif
    enddo  ! end RK4 stages
 
-   ! clip phi between 0 and 1
+   !$acc host_data use_device(phi)
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, phi, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, phi, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   !$acc end host_data
+   #if surflag == 1
+   !$acc host_data use_device(surf)
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
+   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
+   !$acc end host_data
+   #endif
+
    !$acc parallel loop collapse(3)
    do k=1, piX%shape(3)
       do j=1, piX%shape(2)
          do i=1,nx
-            val = max(0.0d0, min(phi(i,j,k), 1.0d0))
             phi(i,j,k) = val
             psidi(i,j,k) = eps*log((val+enum)/(1.d0-val+enum))
             #if phiflag == 1
@@ -588,6 +652,7 @@ do t=tstart,tfin
       enddo
    enddo
 
+   ! recompute normals for NS
    !$acc kernels
    do k=1+halo_ext, piX%shape(3)-halo_ext
       do j=1+halo_ext, piX%shape(2)-halo_ext
@@ -632,97 +697,12 @@ do t=tstart,tfin
 
 
    !########################################################################################################################################
-   ! START STEP 5: SURFACTANT (RK4 EXPLICIT)
-   !########################################################################################################################################
-   #if surflag == 1
-   ! 4.2 Get surf at n+1 using RK4 + skew-symmetric splitting
-   gamma=1.d0*gumax
-   ! Low-storage auxiliary register
-   !$acc parallel loop collapse(3)
-   do k=1+halo_ext, piX%shape(3)-halo_ext
-      do j=1+halo_ext, piX%shape(2)-halo_ext
-         do i=1,nx
-            q_surf(i,j,k) = 0.d0
-         enddo
-      enddo
-   enddo
-
-   ! Low storage RK4 - 2 registers - 5 stages - Carpenter-Kennedy 
-   do stage = 1, 5
-
-      !$acc host_data use_device(surf)
-      CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
-      CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
-      !$acc end host_data 
-
-      ! Compute all the fluxes at the faces and add them to rhsphi
-      ! u,v,w are already updated from NS of init
-      ! skew-symmetric splitting for all contritbuions, all computed as a divergence
-      !$acc parallel loop collapse(3) default(present)
-      do k=1+halo_ext, piX%shape(3)-halo_ext
-         do j=1+halo_ext, piX%shape(2)-halo_ext
-            do i=1,nx
-               im=i-1
-               ip=i+1 
-               jm=j-1
-               jp=j+1
-               km=k-1 
-               kp=k+1
-               if (ip .gt. nx) ip=1
-               if (im .lt. 1)  im=nx
-               ! Advection fluxes
-               fxp = u(ip,j,k)*0.5d0*(surf(ip,j,k) + surf(i,j,k))
-               fxm =  u(i,j,k)*0.5d0*(surf(im,j,k) + surf(i,j,k))
-               fyp = v(i,jp,k)*0.5d0*(surf(i,jp,k) + surf(i,j,k))
-               fym =  v(i,j,k)*0.5d0*(surf(i,jm,k) + surf(i,j,k))
-               fzp = w(i,j,kp)*0.5d0*(surf(i,j,kp) + surf(i,j,k))
-               fzm =  w(i,j,k)*0.5d0*(surf(i,j,km) + surf(i,j,k))
-               rhsurf(i,j,k) = - (fxp - fxm)*dxi  - (fyp - fym)*dxi - (fzp - fzm)*dxi
-               ! Diffusion fluxes
-               fxp = diffs*eps*(surf(ip,j,k)-surf(i,j,k))*dxi
-               fxm = diffs*eps*(surf(i,j,k)-surf(im,j,k))*dxi
-               fyp = diffs*eps*(surf(i,jp,k)-surf(i,j,k))*dxi
-               fym = diffs*eps*(surf(i,j,k)-surf(i,jm,k))*dxi
-               fzp = diffs*eps*(surf(i,j,kp)-surf(i,j,k))*dxi
-               fzm = diffs*eps*(surf(i,j,k)-surf(i,j,km))*dxi
-               rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
-               ! Sharpening fluxes
-               fxp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(ip,j,k)+phi(i,j,k)))*0.5d0*(normx(ip,j,k)+normx(i,j,k))*0.5d0*(surf(ip,j,k)+surf(i,j,k))*epsi
-               fxm = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(im,j,k)+phi(i,j,k)))*0.5d0*(normx(im,j,k)+normx(i,j,k))*0.5d0*(surf(im,j,k)+surf(i,j,k))*epsi
-               fyp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,jp,k)+phi(i,j,k)))*0.5d0*(normy(i,jp,k)+normy(i,j,k))*0.5d0*(surf(i,jp,k)+surf(i,j,k))*epsi
-               fym = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,jm,k)+phi(i,j,k)))*0.5d0*(normy(i,jm,k)+normy(i,j,k))*0.5d0*(surf(i,jm,k)+surf(i,j,k))*epsi
-               fzp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,j,kp)+phi(i,j,k)))*0.5d0*(normz(i,j,kp)+normz(i,j,k))*0.5d0*(surf(i,j,kp)+surf(i,j,k))*epsi
-               fzm = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(i,j,km)+phi(i,j,k)))*0.5d0*(normz(i,j,km)+normz(i,j,k))*0.5d0*(surf(i,j,km)+surf(i,j,k))*epsi
-               rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
-               q_surf(i,j,k) = rk4a(stage)*q_surf(i,j,k) + dt*rhsurf(i,j,k)
-               surf(i,j,k)   = surf(i,j,k) + rk4b(stage)*q_surf(i,j,k)
-            enddo
-         enddo
-      enddo
-   enddo  ! end RK4 stages
-
-   !$acc host_data use_device(surf)
-   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 2))
-   CHECK_CUDECOMP_EXIT(cudecompUpdateHalosX(handle, grid_desc, surf, work_halo_d, CUDECOMP_DOUBLE, piX%halo_extents, halo_periods, 3))
-   !$acc end host_data
-
-   ! call nvtxEndRange
-    #endif
-   !########################################################################################################################################
-   ! END STEP 5: PHASE-FIELD SOLVER 
-   !########################################################################################################################################
-
-
-
-   !########################################################################################################################################
    ! START STEP 6: USTAR COMPUTATION (PROJECTION STEP)
    !########################################################################################################################################
    ! 6.1 compute rhs 
    ! 6.2 obtain ustar and store old rhs in rhs_o
    ! 6.3 Call halo exchnages along Y and Z for u,v,w
 
-   ! (uncomment for profiling)
-   ! call nvtxStartRange("Projection")
    ! 6.1a Convective and diffusiver terms NS
    ! Loop on inner nodes
    !$acc parallel loop tile(16,4,2) 
