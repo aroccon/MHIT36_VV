@@ -1,9 +1,9 @@
 module commondata
  integer :: nx, ny, nz
  integer :: nstart,nend,dump
- integer :: uflag, vflag, wflag, phiflag, nfields
+ integer :: uflag, vflag, wflag, phiflag, surflag, nfields
  double precision, parameter :: pi=3.14159265358979
  double precision :: dx,dy,dz
  double precision, allocatable, dimension(:) :: x,y,z
- double precision, allocatable, dimension(:,:,:) :: u,v,w,phi
+ double precision, allocatable, dimension(:,:,:) :: u,v,w,phi,surf
 end module commondata

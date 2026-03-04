@@ -18,6 +18,7 @@ allocate(u(nx,ny,nz))
 allocate(v(nx,ny,nz))
 allocate(w(nx,ny,nz))
 allocate(phi(nx,ny,nz))
+allocate(surf(nx,ny))
 
 
 write(*,*) 'Reading step ',nstep,' out of ',nend,' , flow'
@@ -49,6 +50,13 @@ endif
    read(668) phi
    close(668,status='keep')
 endif
+!reading surf
+   if (surflag .eq.	1) then
+   namefile=trim(namedir)//'surf_'//numfile//'.dat'
+   open(668,file=trim(namefile),form='unformatted',access='stream',status='old',convert='little_endian')
+   read(668) surf
+   close(668,status='keep')
+endif
 
 ! generate paraview output file
 call generate_output(nstep)
@@ -59,6 +67,7 @@ deallocate(u)
 deallocate(v)
 deallocate(w)
 deallocate(phi)
+deallocate(surf)
 
 return
 end

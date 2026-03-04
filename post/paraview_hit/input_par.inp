@@ -1,9 +1,10 @@
-512   		!grid
-10000           !start step
-20000           !end step
+512   	    	!grid
+0               !start step
+0.              !end step
 1000            !frequency
 0               !out u
 0               !out v
 0               !out w
 1               !out phi
+1               !out surf
 
