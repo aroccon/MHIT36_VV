@@ -610,7 +610,7 @@ do t=tstart,tfin
    do k=1, piX%shape(3)
       do j=1, piX%shape(2)
          do i=1,nx
-            val = max(0.0d0, min(phi(i,j,k), 1.0d0))
+            !val = max(0.0d0, min(phi(i,j,k), 1.0d0))
             phi(i,j,k) = val
             psidi(i,j,k) = eps*log((val+enum)/(1.d0-val+enum))
             #if phiflag == 1
@@ -671,7 +671,6 @@ do t=tstart,tfin
    !########################################################################################################################################
    #if surfflag == 1
    ! 4.2 Get surf at n+1 using RK4 + skew-symmetric splitting
-   gamma=1.d0*gumax
    ! Low-storage auxiliary register
    !$acc parallel loop collapse(3)
    do k=1+halo_ext, piX%shape(3)-halo_ext
@@ -684,8 +683,7 @@ do t=tstart,tfin
 
    ! Low storage RK4 - 2 registers - 5 stages - Carpenter-Kennedy 
    do stage = 1, 5
-      ! Compute all the fluxes at the faces and add them to rhsphi
-      ! u,v,w are already updated from NS of init
+      ! Compute all the fluxes at the faces and add them to rhsurf
       ! skew-symmetric splitting for all contritbuions, all computed as a divergence
       !$acc parallel loop collapse(3) default(present)
       do k=1+halo_ext, piX%shape(3)-halo_ext

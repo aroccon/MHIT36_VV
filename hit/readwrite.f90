@@ -3,7 +3,7 @@ subroutine writefield(t,fieldn)
 
 use velocity
 use phase
-use surf
+use surfactant
 use mpi
 use mpivar
 use param
@@ -122,7 +122,7 @@ subroutine readfield(fieldn)
 
 use velocity
 use phase
-use surf
+use surfactant
 use mpi
 use mpivar
 use param
@@ -242,7 +242,7 @@ subroutine readfield_restart(t,fieldn)
 
 use velocity
 use phase
-use surf
+use surfactant
 use mpi
 use mpivar
 use param
@@ -337,6 +337,7 @@ if (fieldn .eq. 6) then
   call mpi_file_read(f_handle,in,p_size(1)*p_size(2)*p_size(3),mpi_double_precision,mpi_status_ignore,ierr)
   call mpi_file_close(f_handle,ierr)
   surf(1:nx,1+halo_ext:piX%shape(2)-halo_ext,1+halo_ext:piX%shape(3)-halo_ext)=in !<- read only the inner parts (no halo) u has halos; in no halos
+endif
 
 deallocate(in)
 

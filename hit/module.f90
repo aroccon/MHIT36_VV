@@ -83,10 +83,10 @@ module phase
    double precision, allocatable :: fxst(:,:,:), fyst(:,:,:), fzst(:,:,:)
 end module phase
 
-module surf
+module surfactant
    double precision, allocatable :: surf(:,:,:), rhsurf(:,:,:), q_surf(:,:,:)
    double precision :: diffs, betas
-end module surf
+end module surfactant
 
 
 
