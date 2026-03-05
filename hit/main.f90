@@ -598,12 +598,12 @@ do t=tstart,tfin
                fzm =  w(i,j,k)*0.5d0*(surf(i,j,km) + surf(i,j,k))
                rhsurf(i,j,k) = - (fxp - fxm)*dxi  - (fyp - fym)*dxi - (fzp - fzm)*dxi
                ! Diffusion fluxes
-               fxp = diffs*eps*(surf(ip,j,k)-surf(i,j,k))*dxi
-               fxm = diffs*eps*(surf(i,j,k)-surf(im,j,k))*dxi
-               fyp = diffs*eps*(surf(i,jp,k)-surf(i,j,k))*dxi
-               fym = diffs*eps*(surf(i,j,k)-surf(i,jm,k))*dxi
-               fzp = diffs*eps*(surf(i,j,kp)-surf(i,j,k))*dxi
-               fzm = diffs*eps*(surf(i,j,k)-surf(i,j,km))*dxi
+               fxp = diffs*(surf(ip,j,k)-surf(i,j,k))*dxi
+               fxm = diffs*(surf(i,j,k)-surf(im,j,k))*dxi
+               fyp = diffs*(surf(i,jp,k)-surf(i,j,k))*dxi
+               fym = diffs*(surf(i,j,k)-surf(i,jm,k))*dxi
+               fzp = diffs*(surf(i,j,kp)-surf(i,j,k))*dxi
+               fzm = diffs*(surf(i,j,k)-surf(i,j,km))*dxi
                rhsurf(i,j,k) = rhsurf(i,j,k) + (fxp - fxm)*dxi  + (fyp - fym)*dxi + (fzp - fzm)*dxi
                ! Sharpening fluxes
                fxp = -2.d0*diffs*(0.5d0 - 0.5d0*(phi(ip,j,k)+phi(i,j,k)))*0.5d0*(normx(ip,j,k)+normx(i,j,k))*0.5d0*(surf(ip,j,k)+surf(i,j,k))*epsi

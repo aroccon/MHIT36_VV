@@ -75,6 +75,7 @@ if (rank .eq. 0) then
     write(*,*) "Radius  ", radius
     write(*,*) "Sigma   ", sigma
     write(*,*) "Eps     ", eps
+    write(*,*) "diffsurf     ", diffs
     write(*,*) "Epsi    ", epsi
     write(*,*) "Lx      ", lx
     write(*,*) "dx", dx

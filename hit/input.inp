@@ -16,5 +16,5 @@
 0.5         ! Initial drop radius for phase-field
 0.46d0      ! Surface tension
 0.51        ! Ratio eps/dx
-0.006       ! Surfactant diffusivity
+0.1       ! Surfactant diffusivity
 0.000       ! Elasticity number
